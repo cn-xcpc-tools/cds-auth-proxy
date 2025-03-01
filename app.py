@@ -1,8 +1,10 @@
-import json
 import logging
 import logging.config
+import os
 import pathlib
+import sys
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from http import HTTPStatus
 from typing import Annotated
@@ -16,10 +18,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-try:
-    logging.config.dictConfig(json.loads((pathlib.Path(__file__).parent / "config" / "logconfig.json").read_text()))
-except FileNotFoundError:
-    pass
+__version__ = "0.1.0"
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +205,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="CDS Auth Proxy", lifespan=lifespan)
+app = FastAPI(title="CDS Auth Proxy", lifespan=lifespan, version=__version__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -286,3 +285,94 @@ async def proxy_stream(
     ] = False,
 ):
     return await _proxy_stream(url, username, password, allow_insecure)
+
+
+def _print_banner():
+    print(f"""\
+╔════════════════════════════════════════════════╗
+║ Contest Data Server Media Authentication Proxy ║
+║ Version {__version__:<38} ║
+║ Licensed under the MIT License                 ║
+╚════════════════════════════════════════════════╝
+""")
+
+
+def _generate_certificate():
+    certs_dir = pathlib.Path("certs")
+    certs_dir.mkdir(exist_ok=True)
+    if (certs_dir / "").exists():
+        print("key.pem already exists, skipping certificate generation.")
+        print()
+        return
+
+    print("Generating self-signed certificate...")
+    print("For production use, please use a valid certificate.")
+    print()
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    # Generate EC private key using NIST P-256 curve (prime256v1)
+    private_key = ec.generate_private_key(ec.SECP256R1())
+
+    # Generate certificate
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(UTC))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=365))
+        .sign(private_key, hashes.SHA256())
+    )
+
+    # Write certificate and private key to certs directory
+    (certs_dir / "key.pem").write_bytes(
+        private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    (certs_dir / "key.pem").chmod(0o600)
+    (certs_dir / "cert.pem").write_bytes(cert.public_bytes(encoding=serialization.Encoding.PEM))
+
+
+def _run_server(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+
+    ssl_cert = pathlib.Path("certs/cert.pem")
+    ssl_key = pathlib.Path("certs/key.pem")
+    log_config = pathlib.Path("config/logconfig.json")
+
+    from granian.cli import cli
+
+    cli.main(
+        [
+            "--interface",
+            "asgi",
+            "app:app",
+            "--ssl-certificate",
+            ssl_cert.as_posix(),
+            "--ssl-keyfile",
+            ssl_key.as_posix(),
+            "--log-config",
+            log_config.as_posix(),
+        ]
+        + argv
+    )
+
+
+if __name__ == "__main__":
+    script_dir = pathlib.Path(__file__).parent.absolute()
+    os.chdir(script_dir)
+
+    _print_banner()
+    _generate_certificate()
+    _run_server(sys.argv[1:])
