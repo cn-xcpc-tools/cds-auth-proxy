@@ -1,0 +1,31 @@
+[project]
+name = "cds-auth-proxy"
+version = "0.1.0"
+description = "Simple tool provide auth proxy for cds video stream."
+authors = [
+    {name = "cubercsl",email = "hi@cubercsl.site"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi[standard] (>=0.115.10,<0.116.0)",
+    "aiohttp (>=3.9.3,<4.0.0)",
+    "pydantic (>=2.10.6,<3.0.0)",
+    "dotenv (>=0.9.9,<0.10.0)",
+    "hypercorn (>=0.17.3,<0.18.0)",
+]
+
+[tool.poetry]
+package-mode = false
+
+[tool.ruff]
+line-length = 127
+
+[tool.poetry.group.dev.dependencies]
+mypy = "^1.15.0"
+ruff = "^0.9.9"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
