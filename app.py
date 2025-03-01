@@ -82,6 +82,7 @@ class Team(BaseModel):
 
 # Store for team data
 teams_data: dict[str, Team] = {}
+BASE_URL, USERNAME, PASSWORD, ALLOW_INSECURE = None, None, None, None
 
 
 async def update_teams_data() -> None:
@@ -148,7 +149,9 @@ def _get_stream_url(team_id: str, stream_type: StreamType, index: int) -> str:
     )
 
 
-async def _proxy_stream(url: str, username: str, password: str, allow_insecure: bool) -> StreamingResponse:
+async def _proxy_stream(
+    url: str, username: str | None, password: str | None, allow_insecure: bool | None
+) -> StreamingResponse:
     """
     Proxy the stream from the remote server with authentication
     """
@@ -225,21 +228,21 @@ async def index():
     "/admin/reload",
     tags=["Admin"],
     summary="Reload the teams data from the remote server",
+    status_code=HTTPStatus.NO_CONTENT,
 )
-async def reload_data():
+async def reload_data() -> None:
     await update_teams_data()
-    return {"message": "Data updated"}
 
 
 @app.get("/teams", response_model=list[Team], tags=["Teams"], summary="Get all teams")
-async def get_teams():
+async def get_teams() -> list[Team]:
     return list(teams_data.values())
 
 
 @app.get("/teams/{id}", response_model=Team, tags=["Teams"], summary="Get the given team")
 async def get_team(
     team_id: Annotated[str, Path(title="Team ID", alias="id", description="The ID of the entity")],
-):
+) -> Team:
     if team_id not in teams_data:
         raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Team not found")
 
@@ -266,7 +269,7 @@ async def get_stream(
             ge=0,
         ),
     ] = 0,
-):
+) -> StreamingResponse:
     url = _get_stream_url(team_id, stream_type, index)
     return await _proxy_stream(url, USERNAME, PASSWORD, ALLOW_INSECURE)
 
@@ -274,8 +277,8 @@ async def get_stream(
 @app.get("/stream", tags=["Stream"], summary="Proxy the given URL with authentication")
 async def proxy_stream(
     url: Annotated[str, Query(title="Stream URL", description="The URL of the stream")],
-    username: Annotated[str, Query(title="Username", description="The username for authentication")] = None,
-    password: Annotated[str, Query(title="Password", description="The password for authentication")] = None,
+    username: Annotated[str | None, Query(title="Username", description="The username for authentication")] = None,
+    password: Annotated[str | None, Query(title="Password", description="The password for authentication")] = None,
     allow_insecure: Annotated[
         bool,
         Query(
@@ -283,7 +286,7 @@ async def proxy_stream(
             description="Allow insecure connections",
         ),
     ] = False,
-):
+) -> StreamingResponse:
     return await _proxy_stream(url, username, password, allow_insecure)
 
 
