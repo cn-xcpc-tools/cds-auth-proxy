@@ -27,12 +27,12 @@ Change `USERNAME` and `PASSWORD` to your CDS credentials, and the `BASE_URL` to 
 Change `ALLOW_INSECURE` to `true` if you want to allow insecure connections to cds (e.g. self-signed certificates).
 
 - `(poetry run) fastapi run` start the http server on port 8000.
-- `(poetry run) ./app` will start the https server with `hypercorn` on port 5283.
+- `(poetry run) python run.py` will start the https server with `hypercorn` on port 5283.
 
 > [!NOTE]  
 > Browsers limit the number of HTTP connections with the same domain name. This restriction is defined in the HTTP specification (RFC2616). Most modern browsers allow six connections per domain. Most older browsers allow only two connections per domain.
 >
-> When embedding multiple streams (such as ICPC Live Split Screen), you may need to avoid this limitation by running multiple instances of the proxy on different ports, or use HTTP/2 (this can be done by putting a "termination proxy" in front, like `Traefik`, `Caddy`, or `Nginx`, or setting up https with `hypercorn`, like the `./app` script).
+> When embedding multiple streams (such as ICPC Live Split Screen), you may need to avoid this limitation by running multiple instances of the proxy on different ports, or use HTTP/2 (this can be done by putting a "termination proxy" in front, like `Traefik`, `Caddy`, or `Nginx`, or setting up https with `hypercorn`, like the `run.py` script).
 
 ### Get Streams
 

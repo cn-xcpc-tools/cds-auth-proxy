@@ -44,15 +44,22 @@ def load_config():
     cfg = dotenv_values(".env", verbose=True)
     logger.info("Loading configuration")
 
-    return (
-        cfg.get("BASE_URL"),
-        cfg.get("USERNAME"),
-        cfg.get("PASSWORD"),
-        booleanize(cfg.get("ALLOW_INSECURE", "false")),
-    )
+    base_url = cfg.get("BASE_URL")
+    username = cfg.get("USERNAME")
+    password = cfg.get("PASSWORD")
+    allow_insecure = booleanize(cfg.get("ALLOW_INSECURE", "false"))
 
+    if not base_url:
+        logger.warning("BASE_URL not set, running without cds.")
+        logger.warning("Use POST /admin/reload endpoint to update teams data from cds after setting BASE_URL.")
+        logger.warning("To proxy a stream without cds, use GET /stream endpoint.")
+    else:
+        logger.info("BASE_URL: %s", base_url)
+        logger.info("USERNAME: %s", username)
+        logger.info("PASSWORD: %s", "<hidden>")
+        logger.info("ALLOW_INSECURE: %s", allow_insecure)
 
-BASE_URL, USERNAME, PASSWORD, ALLOW_INSECURE = load_config()
+    return (base_url, username, password, allow_insecure)
 
 
 class StreamType(StrEnum):
@@ -85,10 +92,6 @@ async def update_teams_data() -> None:
     global BASE_URL, USERNAME, PASSWORD, ALLOW_INSECURE
     BASE_URL, USERNAME, PASSWORD, ALLOW_INSECURE = load_config()
     if not BASE_URL:
-        logger.warning("BASE_URL not set, running without cds.")
-        logger.warning("Use POST /admin/reload endpoint to update teams data from cds after setting BASE_URL.")
-        logger.warning("To proxy a stream without cds, use GET /stream endpoint.")
-        teams_data.clear()
         return
     async with aiohttp.ClientSession() as session:
         try:
@@ -119,7 +122,7 @@ async def update_teams_data() -> None:
                     )
 
         except aiohttp.ClientError:
-            raise HTTPException(status_code=500, detail="Failed to fetch teams data")
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail="Failed to fetch teams data")
 
 
 def _get_stream_url(team_id: str, stream_type: StreamType, index: int) -> str:

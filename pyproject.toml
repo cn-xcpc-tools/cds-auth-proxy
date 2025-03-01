@@ -14,6 +14,7 @@ dependencies = [
     "pydantic (>=2.10.6,<3.0.0)",
     "dotenv (>=0.9.9,<0.10.0)",
     "hypercorn (>=0.17.3,<0.18.0)",
+    "cryptography (>=44.0.1,<45.0.0)",
 ]
 
 [tool.poetry]
