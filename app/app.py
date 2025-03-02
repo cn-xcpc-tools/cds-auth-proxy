@@ -1,12 +1,9 @@
 import logging
-import os
-import pathlib
-import sys
+import logging.config
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
-from enum import StrEnum
 from http import HTTPStatus
-from typing import Annotated, AsyncGenerator, NoReturn
+from threading import Lock
+from typing import Annotated, AsyncGenerator
 from urllib.parse import urljoin
 
 from dotenv import dotenv_values
@@ -14,43 +11,14 @@ from fastapi import FastAPI, HTTPException, Path, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from httpx import AsyncClient, BasicAuth, HTTPError
-from pydantic import BaseModel, HttpUrl, SecretStr
+from pydantic import HttpUrl
 from starlette.background import BackgroundTask
 
-__version__ = "0.1.0"
+from . import __version__
+from .model import AuthConfig, CDSConfig, StreamInfo, StreamType, Team
 
-logger = logging.getLogger(__name__)
-
-
-class AuthConfig(BaseModel):
-    username: str
-    password: SecretStr
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {"username": "admin", "password": "p@s$w0rd"},
-            ]
-        }
-    }
-
-
-class CDSConfig(BaseModel):
-    base_url: HttpUrl | None = None
-    auth: AuthConfig | None = None
-    allow_insecure: bool = False
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "base_url": "https://cds.example.com",
-                    "auth": {"username": "admin", "password": "p@s$w0rd"},
-                    "allow_insecure": False,
-                }
-            ]
-        }
-    }
+# Initialize logging configuration
+logger = logging.getLogger("app")
 
 
 def load_config() -> CDSConfig:
@@ -92,54 +60,9 @@ def load_config() -> CDSConfig:
     return CDSConfig(base_url=base_url, auth=auth, allow_insecure=allow_insecure)
 
 
-class StreamType(StrEnum):
-    desktop = "desktop"
-    webcam = "webcam"
-    audio = "audio"
-
-
-# Data models
-class StreamInfo(BaseModel):
-    href: HttpUrl
-    mime: str
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {"href": "https://cds.example.com/stream/0", "mime": "video/m2ts"},
-            ]
-        }
-    }
-
-
-class Team(BaseModel):
-    id: str
-    desktop: list[StreamInfo] | None = None
-    webcam: list[StreamInfo] | None = None
-    audio: list[StreamInfo] | None = None
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "id": "team1",
-                    "desktop": [
-                        {"href": "https://cds.example.com/stream/0", "mime": "video/m2ts"},
-                    ],
-                    "webcam": [
-                        {"href": "https://cds.example.com/stream/1", "mime": "video/m2ts"},
-                    ],
-                    "audio": [
-                        {"href": "https://cds.example.com/stream/2", "mime": "audio/mp4"},
-                    ],
-                }
-            ]
-        }
-    }
-
-
-# Store for team data
+# Store for team data with thread safety
 teams_data: dict[str, Team] = {}
+teams_lock = Lock()
 cds_config = load_config()
 
 
@@ -156,6 +79,8 @@ async def update_teams_data() -> None:
     if not cds_config.base_url:
         return
 
+    # Fetch new data first before acquiring lock
+    new_teams: dict[str, Team] = {}
     async with AsyncClient(
         auth=_get_basic_auth(cds_config.auth), verify=not cds_config.allow_insecure, timeout=None
     ) as client:
@@ -166,14 +91,17 @@ async def update_teams_data() -> None:
 
             data = response.json()
 
-            # Clear existing data
-            teams_data.clear()
-
-            # Update with new data
+            # Build new teams dictionary
             for team in data:
-                teams_data[team["id"]] = Team(**team)
+                new_teams[team["id"]] = Team(**team)
+
+            # Only update global data once we have everything
+            with teams_lock:
+                teams_data.clear()
+                teams_data.update(new_teams)
+
             logger.info("Teams data updated, total teams = %d", len(teams_data))
-            for team in teams_data.values():
+            for team in new_teams.values():
                 logger.debug(
                     "Team %s: desktop=%d, webcam=%d, audio=%d",
                     team.id,
@@ -190,24 +118,25 @@ def _get_stream_url(team_id: str, stream_type: StreamType, index: int) -> HttpUr
     """
     Get the stream URL for a specific team and stream type
     """
-    if team_id not in teams_data:
-        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Team not found")
+    with teams_lock:
+        if team_id not in teams_data:
+            raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Team not found")
 
-    team = teams_data[team_id]
-    streams: list[StreamInfo] | None = getattr(team, stream_type)
+        team = teams_data[team_id]
+        streams: list[StreamInfo] | None = getattr(team, stream_type)
 
-    if not streams:
+        if not streams:
+            raise HTTPException(
+                status_code=HTTPStatus.NOT_FOUND,
+                detail=f"No {stream_type} stream found for team",
+            )
+
+        if 0 <= index < len(streams):
+            return streams[index].href
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND,
-            detail=f"No {stream_type} stream found for team",
+            detail=f"Stream {index} not found for team",
         )
-
-    if 0 <= index < len(streams):
-        return streams[index].href
-    raise HTTPException(
-        status_code=HTTPStatus.NOT_FOUND,
-        detail=f"Stream {index} not found for team",
-    )
 
 
 async def _proxy_stream(
@@ -260,7 +189,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """
     Update teams data on startup
     """
-
     try:
         await update_teams_data()
         logger.info("Teams data updated")
@@ -304,17 +232,18 @@ async def update_config(config: CDSConfig) -> None:
 
 @app.get("/teams", response_model=list[Team], tags=["Teams"], summary="Get all teams")
 async def get_teams() -> list[Team]:
-    return list(teams_data.values())
+    with teams_lock:
+        return list(teams_data.values())
 
 
 @app.get("/teams/{id}", response_model=Team, tags=["Teams"], summary="Get the given team")
 async def get_team(
     team_id: Annotated[str, Path(title="Team ID", alias="id", description="The ID of the entity")],
 ) -> Team:
-    if team_id not in teams_data:
-        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Team not found")
-
-    return teams_data[team_id]
+    with teams_lock:
+        if team_id not in teams_data:
+            raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Team not found")
+        return teams_data[team_id]
 
 
 @app.get(
@@ -359,94 +288,3 @@ async def proxy_stream(
 ) -> StreamingResponse:
     auth = AuthConfig(username=username, password=password) if username else None
     return await _proxy_stream(req, url, auth, allow_insecure)
-
-
-def _print_banner() -> None:
-    print(f"""\
-╔════════════════════════════════════════════════╗
-║ Contest Data Server Media Authentication Proxy ║
-║ Version {__version__:<38} ║
-║ Licensed under the MIT License                 ║
-╚════════════════════════════════════════════════╝
-""")
-
-
-def _generate_certificate() -> None:
-    certs_dir = pathlib.Path("certs")
-    certs_dir.mkdir(exist_ok=True)
-    if (certs_dir / "key.pem").exists():
-        print("key.pem already exists, skipping certificate generation.")
-        print()
-        return
-
-    print("Generating self-signed certificate...")
-    print("For production use, please use a valid certificate.")
-    print()
-
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import NameOID
-
-    # Generate EC private key using NIST P-256 curve (prime256v1)
-    private_key = ec.generate_private_key(ec.SECP256R1())
-
-    # Generate certificate
-    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
-
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(issuer)
-        .public_key(private_key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.now(UTC))
-        .not_valid_after(datetime.now(UTC) + timedelta(days=365))
-        .sign(private_key, hashes.SHA256())
-    )
-
-    # Write certificate and private key to certs directory
-    (certs_dir / "key.pem").write_bytes(
-        private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-    )
-    (certs_dir / "key.pem").chmod(0o600)
-    (certs_dir / "cert.pem").write_bytes(cert.public_bytes(encoding=serialization.Encoding.PEM))
-
-
-def _run_server(argv: list[str] | None = None) -> NoReturn:
-    if argv is None:
-        argv = sys.argv[1:]
-
-    ssl_cert = pathlib.Path("certs/cert.pem")
-    ssl_key = pathlib.Path("certs/key.pem")
-    log_config = pathlib.Path("config/logconfig.json")
-
-    from granian.cli import cli
-
-    cli.main(
-        [
-            "--interface",
-            "asgi",
-            "app:app",
-            "--ssl-certificate",
-            ssl_cert.as_posix(),
-            "--ssl-keyfile",
-            ssl_key.as_posix(),
-            "--log-config",
-            log_config.as_posix(),
-        ]
-        + argv
-    )
-
-
-if __name__ == "__main__":
-    script_dir = pathlib.Path(__file__).parent.absolute()
-    os.chdir(script_dir)
-
-    _print_banner()
-    _generate_certificate()
-    _run_server(sys.argv[1:])

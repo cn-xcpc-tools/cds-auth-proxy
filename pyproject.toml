@@ -2,25 +2,25 @@
 name = "cds-auth-proxy"
 version = "0.1.0"
 description = "Simple tool provide auth proxy for cds video stream."
-authors = [
-    {name = "cubercsl",email = "hi@cubercsl.site"}
-]
-license = {text = "MIT"}
+authors = [{ name = "cubercsl", email = "hi@cubercsl.site" }]
+license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "fastapi[standard] (>=0.115.10,<0.116.0)",
-    "pydantic (>=2.10.6,<3.0.0)",
-    "dotenv (>=0.9.9,<0.10.0)",
-    "cryptography (>=44.0.1,<45.0.0)",
-    "granian (>=1.7.6,<2.0.0)",
-    "rich (>=13.9.4,<14.0.0)",
+  "fastapi[standard] (>=0.115.10,<0.116.0)",
+  "pydantic (>=2.10.6,<3.0.0)",
+  "dotenv (>=0.9.9,<0.10.0)",
+  "cryptography (>=44.0.1,<45.0.0)",
+  "granian (>=1.7.6,<2.0.0)",
+  "rich (>=13.9.4,<14.0.0)",
+  "click (>=8.1.8,<9.0.0)",
 ]
 
+[tool.poetry]
+packages = [{ include = "app" }]
+
 [tool.mypy]
-plugins = [
-  "pydantic.mypy"
-]
+plugins = ["pydantic.mypy"]
 
 follow_imports = "silent"
 warn_redundant_casts = true
@@ -36,11 +36,11 @@ disallow_untyped_defs = true
 init_forbid_extra = true
 warn_required_dynamic_aliases = true
 
-[tool.poetry]
-package-mode = false
-
 [tool.ruff]
 line-length = 127
+
+[tool.poetry.scripts]
+cds-auth-proxy = "app.cli:entrypoint"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.15.0"
