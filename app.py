@@ -9,11 +9,11 @@ from http import HTTPStatus
 from typing import Annotated, AsyncGenerator, NoReturn
 from urllib.parse import urljoin
 
-import aiohttp
 from dotenv import dotenv_values
-from fastapi import FastAPI, HTTPException, Path, Query
+from fastapi import FastAPI, HTTPException, Path, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
+from httpx import AsyncClient, BasicAuth, HTTPError
 from pydantic import BaseModel, HttpUrl, SecretStr
 from starlette.background import BackgroundTask
 
@@ -96,10 +96,10 @@ teams_data: dict[str, Team] = {}
 cds_config = load_config()
 
 
-def _get_basic_auth(auth_config: AuthConfig | None) -> aiohttp.BasicAuth | None:
+def _get_basic_auth(auth_config: AuthConfig | None) -> BasicAuth | None:
     if not auth_config:
         return None
-    return aiohttp.BasicAuth(auth_config.username, auth_config.password.get_secret_value())
+    return BasicAuth(auth_config.username, auth_config.password.get_secret_value())
 
 
 async def update_teams_data() -> None:
@@ -108,35 +108,34 @@ async def update_teams_data() -> None:
     """
     if not cds_config.base_url:
         return
-    async with aiohttp.ClientSession() as session:
+
+    async with AsyncClient(
+        auth=_get_basic_auth(cds_config.auth), verify=not cds_config.allow_insecure, timeout=None
+    ) as client:
         try:
-            async with session.get(
-                urljoin(str(cds_config.base_url), "teams"),
-                auth=_get_basic_auth(cds_config.auth),
-                ssl=(not cds_config.allow_insecure),
-            ) as response:
-                if response.status != 200:
-                    raise HTTPException(status_code=response.status, detail=f"Failed to fetch teams data: {response.reason}")
+            response = await client.get(urljoin(str(cds_config.base_url), "teams"))
+            if response.status_code != HTTPStatus.OK:
+                raise HTTPException(response.status_code, detail=response.text)
 
-                data = await response.json()
+            data = response.json()
 
-                # Clear existing data
-                teams_data.clear()
+            # Clear existing data
+            teams_data.clear()
 
-                # Update with new data
-                for team in data:
-                    teams_data[team["id"]] = Team(**team)
-                logger.info("Teams data updated, total teams = %d", len(teams_data))
-                for team in teams_data.values():
-                    logger.debug(
-                        "Team %s: desktop=%d, webcam=%d, audio=%d",
-                        team.id,
-                        len(team.desktop or []),
-                        len(team.webcam or []),
-                        len(team.audio or []),
-                    )
+            # Update with new data
+            for team in data:
+                teams_data[team["id"]] = Team(**team)
+            logger.info("Teams data updated, total teams = %d", len(teams_data))
+            for team in teams_data.values():
+                logger.debug(
+                    "Team %s: desktop=%d, webcam=%d, audio=%d",
+                    team.id,
+                    len(team.desktop or []),
+                    len(team.webcam or []),
+                    len(team.audio or []),
+                )
 
-        except aiohttp.ClientError as e:
+        except HTTPError as e:
             raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=f"Failed to fetch teams data: {str(e)}")
 
 
@@ -164,43 +163,45 @@ def _get_stream_url(team_id: str, stream_type: StreamType, index: int) -> HttpUr
     )
 
 
-async def _proxy_stream(url: HttpUrl, auth_config: AuthConfig | None, allow_insecure: bool = False) -> StreamingResponse:
+async def _proxy_stream(
+    req: Request, url: HttpUrl, auth_config: AuthConfig | None, allow_insecure: bool = False
+) -> StreamingResponse:
     """
     Proxy the stream from the remote server with authentication
     """
-    logger.info("Proxying stream %s", url)
+    # Constants for header filtering
+    hop_by_hop_headers = {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+    }
 
-    session = None
-    response = None
-
-    async def cleanup() -> None:
-        nonlocal session, response
-        if response:
-            response.close()
-        if session:
-            await session.close()
+    client = AsyncClient(auth=_get_basic_auth(auth_config), verify=not allow_insecure, timeout=None)
+    logger.info("Proxying stream: %s", url)
 
     try:
-        session = aiohttp.ClientSession()
-        auth = _get_basic_auth(auth_config)
-        response = await session.get(
-            str(url),
-            auth=auth,
-            ssl=(not allow_insecure),
-            timeout=None,
+        response = await client.send(
+            client.build_request("GET", str(url), headers=req.headers),
+            stream=True,
         )
-
-        if response.status != HTTPStatus.OK:
-            await cleanup()
-            raise HTTPException(status_code=response.status, detail="Failed to fetch stream")
-
+        if response.status_code != HTTPStatus.OK:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"HTTP {response.status_code} {response.reason_phrase}",
+            )
         return StreamingResponse(
-            response.content.iter_any(),
-            media_type=response.headers.get("content-type"),
-            background=BackgroundTask(cleanup),
+            response.aiter_bytes(),
+            headers={k: v for k, v in response.headers.items() if k.lower() not in hop_by_hop_headers},
+            media_type=response.headers.get("content-type", "application/octet-stream"),
+            background=BackgroundTask(client.aclose),
         )
-    except aiohttp.ClientError as e:
-        await cleanup()
+    except HTTPError as e:
+        await client.aclose()
         raise HTTPException(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             detail=f"Failed to proxy stream: {str(e)}",
@@ -275,6 +276,7 @@ async def get_team(
     summary="Get stream for the given team and stream type",
 )
 async def get_stream(
+    req: Request,
     team_id: Annotated[str, Path(title="Team ID", alias="id", description="The ID of the entity")],
     stream_type: Annotated[
         StreamType,
@@ -291,11 +293,12 @@ async def get_stream(
     ] = 0,
 ) -> StreamingResponse:
     url = _get_stream_url(team_id, stream_type, index)
-    return await _proxy_stream(url, cds_config.auth, cds_config.allow_insecure)
+    return await _proxy_stream(req, url, cds_config.auth, cds_config.allow_insecure)
 
 
 @app.get("/stream", tags=["Stream"], summary="Proxy the given URL with authentication")
 async def proxy_stream(
+    req: Request,
     url: Annotated[HttpUrl, Query(title="Stream URL", description="The URL of the stream")],
     username: Annotated[str, Query(title="Username", description="The username for authentication")] = "",
     password: Annotated[str, Query(title="Password", description="The password for authentication")] = "",
@@ -308,7 +311,7 @@ async def proxy_stream(
     ] = False,
 ) -> StreamingResponse:
     auth = AuthConfig(username=username, password=password) if username else None
-    return await _proxy_stream(url, auth, allow_insecure)
+    return await _proxy_stream(req, url, auth, allow_insecure)
 
 
 def _print_banner() -> None:

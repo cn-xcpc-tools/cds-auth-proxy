@@ -1,27 +1,12 @@
 {
     "version": 1,
     "disable_existing_loggers": false,
-    "formatters": {
-        "default": {
-            "()": "fastapi_cli.utils.cli.CustomFormatter",
-            "fmt": "%(levelprefix)s %(message)s",
-            "use_colors": null
-        },
-        "access": {
-            "()": "fastapi_cli.utils.cli.CustomFormatter",
-            "fmt": "%(levelprefix)s %(client_addr)s - '%(request_line)s' %(status_code)s"
-        }
-    },
     "handlers": {
         "default": {
-            "formatter": "default",
-            "class": "logging.StreamHandler",
-            "stream": "ext://sys.stderr"
-        },
-        "access": {
-            "formatter": "access",
-            "class": "logging.StreamHandler",
-            "stream": "ext://sys.stdout"
+            "class": "rich.logging.RichHandler",
+            "show_time": true,
+            "show_path": true,
+            "rich_tracebacks": true
         }
     },
     "loggers": {
@@ -35,9 +20,21 @@
         "granian.access": {
             "level": "INFO",
             "handlers": [
-                "access"
+                "default"
             ],
             "propagate": false
+        },
+        "httpx": {
+            "level": "INFO",
+            "handlers": [
+                "default"
+            ]
+        },
+        "httpcore": {
+            "level": "INFO",
+            "handlers": [
+                "default"
+            ]
         },
         "app": {
             "level": "DEBUG",
