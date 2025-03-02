@@ -1,5 +1,4 @@
 import logging
-import logging.config
 import os
 import pathlib
 import sys
@@ -7,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from http import HTTPStatus
-from typing import Annotated
+from typing import Annotated, NoReturn
 from urllib.parse import urljoin
 
 import aiohttp
@@ -15,7 +14,7 @@ from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl, SecretStr
 from starlette.background import BackgroundTask
 
 __version__ = "0.1.0"
@@ -23,7 +22,14 @@ __version__ = "0.1.0"
 logger = logging.getLogger(__name__)
 
 
-def load_config():
+class CDSConfig(BaseModel):
+    base_url: HttpUrl | None = None
+    username: str | None = None
+    password: SecretStr | None = None
+    allow_insecure: bool = False
+
+
+def load_config() -> CDSConfig:
     """Load configuration from .env file"""
 
     def booleanize(value) -> bool:
@@ -50,15 +56,15 @@ def load_config():
 
     if not base_url:
         logger.warning("BASE_URL not set, running without cds.")
-        logger.warning("Use POST /admin/reload endpoint to update teams data from cds after setting BASE_URL.")
+        logger.warning("Use POST /admin/config endpoint to update config and reload teams data from cds.")
         logger.warning("To proxy a stream without cds, use GET /stream endpoint.")
     else:
-        logger.info("BASE_URL: %s", base_url)
-        logger.info("USERNAME: %s", username)
-        logger.info("PASSWORD: %s", "<hidden>")
-        logger.info("ALLOW_INSECURE: %s", allow_insecure)
+        logger.info("base_url: %s", base_url)
+        logger.info("username: %s", username)
+        logger.info("password: %s", "<hidden>")
+        logger.info("allow_insecure: %s", allow_insecure)
 
-    return (base_url, username, password, allow_insecure)
+    return CDSConfig(base_url=base_url, username=username, password=password, allow_insecure=allow_insecure)
 
 
 class StreamType(StrEnum):
@@ -69,7 +75,7 @@ class StreamType(StrEnum):
 
 # Data models
 class StreamInfo(BaseModel):
-    href: str
+    href: HttpUrl
     mime: str
 
 
@@ -82,26 +88,25 @@ class Team(BaseModel):
 
 # Store for team data
 teams_data: dict[str, Team] = {}
-BASE_URL, USERNAME, PASSWORD, ALLOW_INSECURE = None, None, None, None
+cds_config = load_config()
 
 
 async def update_teams_data() -> None:
     """
     Fetch and update teams data from the remote server
     """
-    global BASE_URL, USERNAME, PASSWORD, ALLOW_INSECURE
-    BASE_URL, USERNAME, PASSWORD, ALLOW_INSECURE = load_config()
-    if not BASE_URL:
+    if not cds_config.base_url:
         return
+    auth = aiohttp.BasicAuth(cds_config.username, cds_config.password.get_secret_value()) if cds_config.username else None
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(
-                urljoin(BASE_URL, "teams"),
-                auth=aiohttp.BasicAuth(USERNAME, PASSWORD),
-                ssl=(not ALLOW_INSECURE),
+                urljoin(str(cds_config.base_url), "teams"),
+                auth=auth,
+                ssl=(not cds_config.allow_insecure),
             ) as response:
                 if response.status != 200:
-                    raise HTTPException(status_code=response.status, detail="Failed to fetch teams data")
+                    raise HTTPException(status_code=response.status, detail=f"Failed to fetch teams data: {response.reason}")
 
                 data = await response.json()
 
@@ -121,8 +126,8 @@ async def update_teams_data() -> None:
                         len(team.audio or []),
                     )
 
-        except aiohttp.ClientError:
-            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail="Failed to fetch teams data")
+        except aiohttp.ClientError as e:
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=f"Failed to fetch teams data: {str(e)}")
 
 
 def _get_stream_url(team_id: str, stream_type: StreamType, index: int) -> str:
@@ -149,9 +154,7 @@ def _get_stream_url(team_id: str, stream_type: StreamType, index: int) -> str:
     )
 
 
-async def _proxy_stream(
-    url: str, username: str | None, password: str | None, allow_insecure: bool | None
-) -> StreamingResponse:
+async def _proxy_stream(url: str, username: str = "", password: str = "", allow_insecure: bool = False) -> StreamingResponse:
     """
     Proxy the stream from the remote server with authentication
     """
@@ -169,7 +172,7 @@ async def _proxy_stream(
 
     try:
         session = aiohttp.ClientSession()
-        auth = aiohttp.BasicAuth(username, password) if username and password else None
+        auth = aiohttp.BasicAuth(username, password) if username else None
         response = await session.get(
             url,
             auth=auth,
@@ -220,17 +223,24 @@ app.add_middleware(
 
 
 @app.get("/", include_in_schema=False)
-async def index():
+async def docs_redirect() -> RedirectResponse:
     return RedirectResponse("/docs")
 
 
+@app.get("/admin/config", tags=["Admin"], summary="Get the current config")
+async def get_config() -> CDSConfig:
+    return cds_config
+
+
 @app.post(
-    "/admin/reload",
+    "/admin/config",
     tags=["Admin"],
-    summary="Reload the teams data from the remote server",
+    summary="Update config and reload the teams data from the remote server",
     status_code=HTTPStatus.NO_CONTENT,
 )
-async def reload_data() -> None:
+async def update_config(config: CDSConfig) -> None:
+    global cds_config
+    cds_config = config
     await update_teams_data()
 
 
@@ -271,14 +281,14 @@ async def get_stream(
     ] = 0,
 ) -> StreamingResponse:
     url = _get_stream_url(team_id, stream_type, index)
-    return await _proxy_stream(url, USERNAME, PASSWORD, ALLOW_INSECURE)
+    return await _proxy_stream(url, cds_config.username, cds_config.password.get_secret_value(), cds_config.allow_insecure)
 
 
 @app.get("/stream", tags=["Stream"], summary="Proxy the given URL with authentication")
 async def proxy_stream(
     url: Annotated[str, Query(title="Stream URL", description="The URL of the stream")],
-    username: Annotated[str | None, Query(title="Username", description="The username for authentication")] = None,
-    password: Annotated[str | None, Query(title="Password", description="The password for authentication")] = None,
+    username: Annotated[str, Query(title="Username", description="The username for authentication")] = "",
+    password: Annotated[str, Query(title="Password", description="The password for authentication")] = "",
     allow_insecure: Annotated[
         bool,
         Query(
@@ -290,7 +300,7 @@ async def proxy_stream(
     return await _proxy_stream(url, username, password, allow_insecure)
 
 
-def _print_banner():
+def _print_banner() -> None:
     print(f"""\
 ╔════════════════════════════════════════════════╗
 ║ Contest Data Server Media Authentication Proxy ║
@@ -300,10 +310,10 @@ def _print_banner():
 """)
 
 
-def _generate_certificate():
+def _generate_certificate() -> None:
     certs_dir = pathlib.Path("certs")
     certs_dir.mkdir(exist_ok=True)
-    if (certs_dir / "").exists():
+    if (certs_dir / "key.pem").exists():
         print("key.pem already exists, skipping certificate generation.")
         print()
         return
@@ -346,7 +356,7 @@ def _generate_certificate():
     (certs_dir / "cert.pem").write_bytes(cert.public_bytes(encoding=serialization.Encoding.PEM))
 
 
-def _run_server(argv=None):
+def _run_server(argv: list[str] | None = None) -> NoReturn:
     if argv is None:
         argv = sys.argv[1:]
 
