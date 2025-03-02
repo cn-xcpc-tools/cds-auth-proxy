@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from http import HTTPStatus
-from typing import Annotated, NoReturn
+from typing import Annotated, AsyncGenerator, NoReturn
 from urllib.parse import urljoin
 
 import aiohttp
@@ -22,17 +22,21 @@ __version__ = "0.1.0"
 logger = logging.getLogger(__name__)
 
 
+class AuthConfig(BaseModel):
+    username: str
+    password: SecretStr
+
+
 class CDSConfig(BaseModel):
     base_url: HttpUrl | None = None
-    username: str | None = None
-    password: SecretStr | None = None
+    auth: AuthConfig | None = None
     allow_insecure: bool = False
 
 
 def load_config() -> CDSConfig:
     """Load configuration from .env file"""
 
-    def booleanize(value) -> bool:
+    def booleanize(value: str | None) -> bool:
         if value is None:
             return False
 
@@ -50,8 +54,8 @@ def load_config() -> CDSConfig:
     logger.info("Loading configuration")
 
     base_url = cfg.get("BASE_URL")
-    username = cfg.get("USERNAME")
-    password = cfg.get("PASSWORD")
+    username = cfg.get("USERNAME", "")
+    password = cfg.get("PASSWORD", "")
     allow_insecure = booleanize(cfg.get("ALLOW_INSECURE", "false"))
 
     if not base_url:
@@ -64,7 +68,8 @@ def load_config() -> CDSConfig:
         logger.info("password: %s", "<hidden>")
         logger.info("allow_insecure: %s", allow_insecure)
 
-    return CDSConfig(base_url=base_url, username=username, password=password, allow_insecure=allow_insecure)
+    auth = AuthConfig(username=username, password=password) if username else None
+    return CDSConfig(base_url=base_url, auth=auth, allow_insecure=allow_insecure)
 
 
 class StreamType(StrEnum):
@@ -91,18 +96,23 @@ teams_data: dict[str, Team] = {}
 cds_config = load_config()
 
 
+def _get_basic_auth(auth_config: AuthConfig | None) -> aiohttp.BasicAuth | None:
+    if not auth_config:
+        return None
+    return aiohttp.BasicAuth(auth_config.username, auth_config.password.get_secret_value())
+
+
 async def update_teams_data() -> None:
     """
     Fetch and update teams data from the remote server
     """
     if not cds_config.base_url:
         return
-    auth = aiohttp.BasicAuth(cds_config.username, cds_config.password.get_secret_value()) if cds_config.username else None
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(
                 urljoin(str(cds_config.base_url), "teams"),
-                auth=auth,
+                auth=_get_basic_auth(cds_config.auth),
                 ssl=(not cds_config.allow_insecure),
             ) as response:
                 if response.status != 200:
@@ -130,7 +140,7 @@ async def update_teams_data() -> None:
             raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=f"Failed to fetch teams data: {str(e)}")
 
 
-def _get_stream_url(team_id: str, stream_type: StreamType, index: int) -> str:
+def _get_stream_url(team_id: str, stream_type: StreamType, index: int) -> HttpUrl:
     """
     Get the stream URL for a specific team and stream type
     """
@@ -154,7 +164,7 @@ def _get_stream_url(team_id: str, stream_type: StreamType, index: int) -> str:
     )
 
 
-async def _proxy_stream(url: str, username: str = "", password: str = "", allow_insecure: bool = False) -> StreamingResponse:
+async def _proxy_stream(url: HttpUrl, auth_config: AuthConfig | None, allow_insecure: bool = False) -> StreamingResponse:
     """
     Proxy the stream from the remote server with authentication
     """
@@ -163,7 +173,7 @@ async def _proxy_stream(url: str, username: str = "", password: str = "", allow_
     session = None
     response = None
 
-    async def cleanup():
+    async def cleanup() -> None:
         nonlocal session, response
         if response:
             response.close()
@@ -172,9 +182,9 @@ async def _proxy_stream(url: str, username: str = "", password: str = "", allow_
 
     try:
         session = aiohttp.ClientSession()
-        auth = aiohttp.BasicAuth(username, password) if username else None
+        auth = _get_basic_auth(auth_config)
         response = await session.get(
-            url,
+            str(url),
             auth=auth,
             ssl=(not allow_insecure),
             timeout=None,
@@ -198,7 +208,7 @@ async def _proxy_stream(url: str, username: str = "", password: str = "", allow_
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """
     Update teams data on startup
     """
@@ -281,12 +291,12 @@ async def get_stream(
     ] = 0,
 ) -> StreamingResponse:
     url = _get_stream_url(team_id, stream_type, index)
-    return await _proxy_stream(url, cds_config.username, cds_config.password.get_secret_value(), cds_config.allow_insecure)
+    return await _proxy_stream(url, cds_config.auth, cds_config.allow_insecure)
 
 
 @app.get("/stream", tags=["Stream"], summary="Proxy the given URL with authentication")
 async def proxy_stream(
-    url: Annotated[str, Query(title="Stream URL", description="The URL of the stream")],
+    url: Annotated[HttpUrl, Query(title="Stream URL", description="The URL of the stream")],
     username: Annotated[str, Query(title="Username", description="The username for authentication")] = "",
     password: Annotated[str, Query(title="Password", description="The password for authentication")] = "",
     allow_insecure: Annotated[
@@ -297,7 +307,8 @@ async def proxy_stream(
         ),
     ] = False,
 ) -> StreamingResponse:
-    return await _proxy_stream(url, username, password, allow_insecure)
+    auth = AuthConfig(username=username, password=password) if username else None
+    return await _proxy_stream(url, auth, allow_insecure)
 
 
 def _print_banner() -> None:
