@@ -27,7 +27,8 @@ Change `USERNAME` and `PASSWORD` to your CDS credentials, and the `BASE_URL` to 
 Change `ALLOW_INSECURE` to `true` if you want to allow insecure connections to cds (e.g. self-signed certificates).
 
 - `(poetry run) fastapi run` start the http server on port 8000.
-- `(poetry run) cds-auth-proxy` will start the https server with `granian` on port 8000. (requires a certificate and key in the `certs` folder), you can use `--host` and `--port` to change the binding address and port.
+- `(poetry run) cds-auth-proxy` will start the https server with `granian` on port 8000. (requires a certificate and key in the `certs` folder).
+    You can use `--host` and `--port` to change the binding address and port.
 
 > [!NOTE]
 > Browsers limit the number of HTTP connections with the same domain name. This restriction is defined in the HTTP specification (RFC2616). Most modern browsers allow six connections per domain. Most older browsers allow only two connections per domain.
@@ -38,10 +39,10 @@ Change `ALLOW_INSECURE` to `true` if you want to allow insecure connections to c
 
 Example usages:
 
-- `https://localhost:5283/teams/{id}/webcam` gets the webcam stream.
-- `https://localhost:5283/teams/{id}/desktop` gets the desktop stream.
-- `https://localhost:5283/teams/{id}/webcam?index=1` gets the second webcam stream.
-- `https://localhost:5283/streams?url={url}` gets the stream from the given URL (with CORS).
+- `https://localhost:8000/teams/{id}/webcam` gets the webcam stream.
+- `https://localhost:8000/teams/{id}/desktop` gets the desktop stream.
+- `https://localhost:8000/teams/{id}/webcam?index=1` gets the second webcam stream.
+- `https://localhost:8000/streams?url={url}` gets the stream from the given URL (with CORS).
 
 ---
 Inspired by [kbats183/webrtc-proxy](https://github.com/kbats183/webrtc-proxy) and [Hydro/xcpc-tools](https://github.com/hydro-dev/xcpc-tools)

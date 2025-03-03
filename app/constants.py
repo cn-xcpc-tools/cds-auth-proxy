@@ -5,10 +5,6 @@ LOGGING_CONFIG = {
         "default": {"class": "rich.logging.RichHandler", "show_time": True, "show_path": True, "rich_tracebacks": True}
     },
     "loggers": {
-        "_granian": {"level": "INFO", "handlers": ["default"], "propagate": False},
-        "granian.access": {"level": "INFO", "handlers": ["default"], "propagate": False},
-        "httpx": {"level": "INFO", "handlers": ["default"]},
-        "httpcore": {"level": "INFO", "handlers": ["default"]},
-        "app": {"level": "INFO", "handlers": ["default"], "propagate": False},
+        "root": {"level": "INFO", "handlers": ["default"]},
     },
 }
