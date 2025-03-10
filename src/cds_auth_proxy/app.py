@@ -13,7 +13,7 @@ from httpx import AsyncClient, BasicAuth, HTTPError
 from pydantic import HttpUrl
 from starlette.background import BackgroundTask
 
-from . import __version__
+from ._version import __version__
 from .model import AuthConfig, CDSConfig, StreamInfo, StreamType, Team
 from .utils import load_config
 
@@ -139,7 +139,7 @@ async def _proxy_stream(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Update teams data on startup
     """
@@ -183,12 +183,14 @@ async def get_config() -> CDSConfig:
 )
 async def update_config(config: CDSConfig) -> None:
     global cds_config
-    async with teams_lock:
-        new_teams = await load_teams_data(config)
-        teams.clear()
-        teams.update(new_teams)
+    # Update config first
     async with cds_config_lock:
         cds_config = config
+    # Then load teams with updated config
+    async with teams_lock:
+        new_teams = await load_teams_data(cds_config)
+        teams.clear()
+        teams.update(new_teams)
 
 
 @app.get("/teams", response_model=list[Team], tags=["Teams"], summary="Get all teams")

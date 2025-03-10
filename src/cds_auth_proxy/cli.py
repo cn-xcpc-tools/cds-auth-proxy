@@ -11,7 +11,7 @@ from granian import Granian
 from granian.constants import HTTPModes, Interfaces
 from granian.log import LogLevels, log_levels_map
 
-from . import __version__
+from ._version import __version__
 from .constants import LOGGING_CONFIG
 
 

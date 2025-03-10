@@ -1,23 +1,43 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
 [project]
 name = "cds-auth-proxy"
-version = "0.1.0"
 description = "Simple tool provide auth proxy for cds video stream."
 authors = [{ name = "cubercsl", email = "hi@cubercsl.site" }]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-  "fastapi[standard] (>=0.115.10,<0.116.0)",
-  "pydantic (>=2.10.6,<3.0.0)",
-  "dotenv (>=0.9.9,<0.10.0)",
-  "cryptography (>=44.0.1,<45.0.0)",
-  "granian (>=1.7.6,<2.0.0)",
-  "rich (>=13.9.4,<14.0.0)",
-  "click (>=8.1.8,<9.0.0)",
+    "click>=8.1.8",
+    "cryptography>=44.0.2",
+    "dotenv>=0.9.9",
+    "fastapi>=0.115.11",
+    "granian>=1.7.6",
+    "httpx>=0.28.1",
+    "rich>=13.9.4",
+]
+dynamic = ["version"]
+
+[project.scripts]
+cds-auth-proxy = "cds_auth_proxy.cli:entrypoint"
+
+[tool.hatch.version.raw-options]
+git_describe_command = [
+  "git",
+  "describe",
+  "--dirty",
+  "--tags",
+  "--long",
+  "--first-parent",
 ]
 
-[tool.poetry]
-packages = [{ include = "app" }]
+[tool.hatch.build.hooks.vcs]
+version-file = "src/cds_auth_proxy/_version.py"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
@@ -39,14 +59,13 @@ warn_required_dynamic_aliases = true
 [tool.ruff]
 line-length = 127
 
-[tool.poetry.scripts]
-cds-auth-proxy = "app.cli:entrypoint"
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
 
-[tool.poetry.group.dev.dependencies]
-mypy = "^1.15.0"
-ruff = "^0.9.9"
-pre-commit = "^4.1.0"
-
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+[dependency-groups]
+dev = [
+    "mypy>=1.15.0",
+    "uvicorn>=0.34.0",
+    "pytest>=8.0.0",
+]
